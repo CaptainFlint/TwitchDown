@@ -1,7 +1,6 @@
 #!/usr/bin/perl
 
 # TODO: Add option to download only part of the video
-# TODO: Try to send playlist to ffmpeg's stdin while building it in runtime (therefore avoiding the startup analyzing stage)
 
 use strict;
 use warnings;
@@ -68,6 +67,19 @@ sub format_time($) {
 	return sprintf('%d:%02d:%02d', int($sec / 3600), int(($sec % 3600) / 60), int($sec % 60));
 }
 
+# Checks whether part of the video should be muted
+sub is_muted($$$) {
+	my ($start, $len, $segments) = @_;
+	# [a,b] ∩ [x,y] ≠ ∅  <=>  x ∈ [a,b] ∨ a ∈ [x,y]
+	for my $seg (@$segments) {
+		if ((($start >= $seg->{'offset'}) && ($start <= $seg->{'offset'} + $seg->{'duration'})) ||
+		    (($seg->{'offset'} >= $start) && ($seg->{'offset'} <= $start + $len))) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 my $err = '';
 my $playlist_file = '';
 do {{
@@ -126,33 +138,21 @@ do {{
 	select($oldh);
 	$m3u =~ s|/[^/]+$|/|;
 	my $dt;
-	my $dt_sum;
-	my $dt_sum_total;
+	my $dt_sum = 0;
+	my $dt_sum_total = 0;
 	my $current_ts = '';
 	my $current_ts_start;
 	my $current_ts_end;
-	my $is_muted = 0;
-	my $total_time;
-	my $progress_line;
 	my $dump_current_ts = sub() {
 		if ($current_ts) {
 			# Dump the previously collected segment
 			printf $playlist_fh "#EXTINF:%.3f,\n", $dt_sum;
-			print $playlist_fh "$m3u$current_ts" . ($is_muted ? '-muted' : '') . ".ts?start_offset=$current_ts_start&end_offset=$current_ts_end\n";
+			print $playlist_fh "$m3u$current_ts" . (is_muted($dt_sum_total, $dt_sum, $json->{'muted_segments'}) ? '-muted' : '') . ".ts?start_offset=$current_ts_start&end_offset=$current_ts_end\n";
 			$dt_sum_total += $dt_sum;
-			print "\x08" x length($progress_line);
-			$progress_line = 'Analyzing video: ' . format_time($dt_sum_total) . '/' . format_time($total_time) . '...';
-			print $progress_line;
 			$current_ts = '';
 		}
 	};
 	for my $ln (split(m/\r?\n/, $playlist)) {
-		if ($ln =~ m/^\x23EXT-X-TWITCH-TOTAL-SECS\s*:\s*([.\d]+)/) {
-			$total_time = int($1);
-			$progress_line = 'Analyzing video: ' . format_time(0) . '/' . format_time($total_time) . '...';
-			print $progress_line;
-		}
-
 		if ($ln =~ m/^\x23EXTINF\s*:\s*([.\d]+),/) {
 			$dt = $1;
 		}
@@ -162,20 +162,6 @@ do {{
 				$dump_current_ts->();
 				($current_ts, $current_ts_start, $current_ts_end) = ($1, $2, $3);
 				$dt_sum = $dt;
-				$is_muted = 0;
-				$res = http_request($m3u . $ln, 'head');
-				if (!$res->is_success) {
-					$err = "Segment $ln is unvailable.\nUnmuted: " . $res->status_line;
-					$is_muted = 1;
-					$res = http_request("$m3u$current_ts-muted.ts?start_offset=$current_ts_start&end_offset=$current_ts_end");
-					if ($res->is_success) {
-						$err = '';
-					}
-					else {
-						$err .= "\nMuted: " . $res->status_line;
-						last;
-					}
-				}
 			}
 			else {
 				# Same segment file continued - merging
