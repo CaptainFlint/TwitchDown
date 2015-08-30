@@ -1,7 +1,5 @@
 #!/usr/bin/perl
 
-# TODO: Add option to download only part of the video
-
 use strict;
 use warnings;
 
@@ -9,12 +7,24 @@ use LWP::UserAgent;
 use JSON;
 
 if (scalar(@ARGV) < 2) {
-	print "Usage: $0 {URL|VideoID} {FileName}\n";
+	print <<EOF;
+Usage: $0 {URL|VideoID} {FileName} [OPTS]
+
+Options:
+  --start=TIME       Download video starting from the specified timestamp.
+  --end=TIME         Download video up to the specified timestamp.
+  --len=TIME         Download video only the specified length of time.
+
+  Supported TIME formats:
+  h:mm:ss
+  h:mm       (seconds = 0)
+  5h, 5m, 5s (5 hours, minutes or seconds)
+EOF
 	exit 1;
 }
 
 # Reading/parsing input arguments
-my ($vid, $file) = @ARGV;
+my ($vid, $file, @opts) = @ARGV;
 my $vid_type = 'v';
 if ($vid =~ m|http://www.twitch.tv/[^/]+/([^/])/(\d+)|) {
 	$vid_type = $1;
@@ -29,6 +39,56 @@ elsif ($vid !~ m/^\d+$/) {
 	exit 1;
 }
 my $vid_url = 'http://api.twitch.tv/api/videos/' . $vid_type . $vid;
+
+my %vod_time = ();
+for (@opts) {
+	if (m/^--(start|end|len)=(.*)/) {
+		my ($k, $v) = ($1, $2);
+		if ($v =~ m/^(\d+)(h|m|s)$/i) {
+			$v = $1 * ( {'h' => 3600, 'm' => 60, 's' => 1}->{$2} );
+		}
+		elsif ($v =~ m/^(\d+):(\d+)(:(\d+))?/) {
+			$v = $1 * 3600 + $2 * 60 + ($4 ? $4 : 0);
+		}
+		else {
+			print "WARNING: Unrecognized time format '$v', skipping.\n";
+			next;
+		}
+		$vod_time{$k} = $v;
+	}
+	else {
+		print "WARNING: Unknown option '$_', skipping.\n";
+	}
+}
+if (exists($vod_time{'start'}) && exists($vod_time{'end'}) && exists($vod_time{'len'})) {
+	print "ERROR: Start, end and length cannot be specified all at once!\n";
+	exit 1;
+}
+elsif (exists($vod_time{'start'}) && exists($vod_time{'end'})) {
+	$vod_time{'len'} = $vod_time{'end'} - $vod_time{'start'};
+	delete($vod_time{'end'});
+}
+elsif (exists($vod_time{'end'}) && exists($vod_time{'len'})) {
+	$vod_time{'start'} = $vod_time{'end'} - $vod_time{'len'};
+	delete($vod_time{'end'});
+}
+elsif (exists($vod_time{'start'}) && exists($vod_time{'len'})) {
+	# Do nothing
+}
+elsif (exists($vod_time{'end'})) {
+	$vod_time{'start'} = 0;
+	$vod_time{'len'} = $vod_time{'end'};
+	delete($vod_time{'end'});
+}
+elsif (exists($vod_time{'len'})) {
+	$vod_time{'start'} = 0;
+}
+elsif (exists($vod_time{'start'})) {
+	# Do nothing
+}
+else {
+	$vod_time{'start'} = 0;
+}
 
 # Request overwriting the target file if necessary
 if (-f $file) {
@@ -67,8 +127,8 @@ sub format_time($) {
 	return sprintf('%d:%02d:%02d', int($sec / 3600), int(($sec % 3600) / 60), int($sec % 60));
 }
 
-# Checks whether part of the video should be muted
-sub is_muted($$$) {
+# Checks whether part of the video intersects with any of the listed segments
+sub is_crossed($$$) {
 	my ($start, $len, $segments) = @_;
 	# [a,b] ∩ [x,y] ≠ ∅  <=>  x ∈ [a,b] ∨ a ∈ [x,y]
 	for my $seg (@$segments) {
@@ -78,6 +138,17 @@ sub is_muted($$$) {
 		}
 	}
 	return 0;
+}
+
+# Checks whether part of the video should be skipped due to user-specified input args
+sub is_skipped($$) {
+	my ($start, $len) = @_;
+	if (exists($vod_time{'len'})) {
+		return !is_crossed($start, $len, [{ 'offset' => $vod_time{'start'}, 'duration' => $vod_time{'len'} }]);
+	}
+	else {
+		return ($start + $len < $vod_time{'start'});
+	}
 }
 
 my $err = '';
@@ -147,10 +218,11 @@ do {{
 		if ($current_ts) {
 			# Dump the previously collected segment
 			printf $playlist_fh "#EXTINF:%.3f,\n", $dt_sum;
-			print $playlist_fh "$m3u$current_ts" . (is_muted($dt_sum_total, $dt_sum, $json->{'muted_segments'}) ? '-muted' : '') . ".ts?start_offset=$current_ts_start&end_offset=$current_ts_end\n";
-			$dt_sum_total += $dt_sum;
+			print $playlist_fh "$m3u$current_ts" . (is_crossed($dt_sum_total, $dt_sum, $json->{'muted_segments'}) ? '-muted' : '') . ".ts?start_offset=$current_ts_start&end_offset=$current_ts_end\n";
 			$current_ts = '';
 		}
+		$dt_sum_total += $dt_sum;
+		$dt_sum = 0;
 	};
 	for my $ln (split(m/\r?\n/, $playlist)) {
 		if ($ln =~ m/^\x23EXTINF\s*:\s*([.\d]+),/) {
@@ -160,12 +232,19 @@ do {{
 			if ($1 ne $current_ts) {
 				# New segment file
 				$dump_current_ts->();
-				($current_ts, $current_ts_start, $current_ts_end) = ($1, $2, $3);
-				$dt_sum = $dt;
+				if (!is_skipped($dt_sum_total + $dt_sum, $dt)) {
+					($current_ts, $current_ts_start, $current_ts_end) = ($1, $2, $3);
+				}
+				$dt_sum += $dt;
 			}
 			else {
 				# Same segment file continued - merging
-				$current_ts_end = $3;
+				if (is_skipped($dt_sum_total + $dt_sum, $dt)) {
+					$dump_current_ts->();
+				}
+				else {
+					$current_ts_end = $3;
+				}
 				$dt_sum += $dt;
 			}
 		}
@@ -175,13 +254,7 @@ do {{
 		}
 	}
 	close($playlist_fh);
-	if ($err) {
-		print " Failed!\n";
-		last;
-	}
-	else {
-		print " Finished, starting download.\n";
-	}
+	last if ($err);
 
 	# Finally, launch ffmpeg to do the rest of work
 	system('C:/Programs/ffmpeg/bin/ffmpeg.exe -y -i ' . $playlist_file . ' -c copy -bsf:a aac_adtstoasc "' . $file . '"');
