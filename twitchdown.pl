@@ -6,6 +6,9 @@ use warnings;
 use LWP::UserAgent;
 use JSON;
 
+# How many threads to use for downloading video segments
+my $NUM_THREADS = 12;
+
 if (scalar(@ARGV) < 2) {
 	print <<EOF;
 Usage: $0 {URL|VideoID} {FileName} [OPTS]
@@ -154,6 +157,8 @@ sub is_skipped($$) {
 my $err = '';
 my $playlist_file = '';
 do {{
+	my @warnings = ();
+
 	# Download the VOD JSON
 	my $res = http_request($vid_url);
 	if (!$res->is_success) {
@@ -169,6 +174,9 @@ do {{
 	if (!$json->{'preview'}) {
 		$err = 'JSON does not contain preview URL.';
 		last;
+	}
+	if ($json->{'muted_segments'}) {
+		push @warnings, "Muted segments are present.";
 	}
 
 	# Construct the playlist URL
@@ -197,8 +205,11 @@ do {{
 	# 1) being local;
 	# 2) compactification;
 	# 3) using correct URLs for muted parts.
+	my @segment_urls = ();
 	my $playlist_fh;
-	$playlist_file = "C:/Users/CaptainFlint/AppData/Local/Temp/index-dvr-$vid.m3u8";
+	my $data_dir = 'C:/Users/CaptainFlint/AppData/Local/Temp';
+	$playlist_file = "$data_dir/index-dvr-$vid.m3u8";
+	mkdir("$data_dir/twitch-vod-$vid");
 	if (!open($playlist_fh, '>', $playlist_file)) {
 		$err = "Failed to open temp file [$playlist_file]:\n$!";
 		last;
@@ -217,8 +228,10 @@ do {{
 	my $dump_current_ts = sub() {
 		if ($current_ts) {
 			# Dump the previously collected segment
+			my $segment_file = $current_ts . (is_crossed($dt_sum_total, $dt_sum, $json->{'muted_segments'}) ? '-muted' : '') . '.ts';
 			printf $playlist_fh "#EXTINF:%.3f,\n", $dt_sum;
-			print $playlist_fh "$m3u$current_ts" . (is_crossed($dt_sum_total, $dt_sum, $json->{'muted_segments'}) ? '-muted' : '') . ".ts?start_offset=$current_ts_start&end_offset=$current_ts_end\n";
+			print $playlist_fh "twitch-vod-$vid/$segment_file\n";
+			push @segment_urls, "$m3u$segment_file?start_offset=$current_ts_start&end_offset=$current_ts_end";
 			$current_ts = '';
 		}
 		$dt_sum_total += $dt_sum;
@@ -227,6 +240,9 @@ do {{
 	for my $ln (split(m/\r?\n/, $playlist)) {
 		if ($ln =~ m/^\x23EXTINF\s*:\s*([.\d]+),/) {
 			$dt = $1;
+		}
+		elsif ($ln =~ m/^\x23EXT-X-TWITCH-DISCONTINUITY\s*:\s*([.\d]+)/) {
+			push @warnings, "Stream contains a gap of $1 seconds.";
 		}
 		elsif ($ln =~ m/^(index-[^.]+)\.ts\?start_offset=(\d+)&end_offset=(\d+)/) {
 			if ($1 ne $current_ts) {
@@ -255,6 +271,93 @@ do {{
 	}
 	close($playlist_fh);
 	last if ($err);
+
+#if (!open($playlist_fh, '>', $playlist_file.".seg")) {
+#	$err = "Failed to open temp file [$playlist_file.seg]:\n$!";
+#	last;
+#}
+#binmode($playlist_fh);
+#print $playlist_fh "$_\n" foreach (@segment_urls);
+#close($playlist_fh);
+
+	print "!!! WARNING: $_\n" foreach (@warnings);
+	print "\n";
+
+	my $seg_num = scalar(@segment_urls);
+	my $seg_num_part = int($seg_num / $NUM_THREADS);
+	++$seg_num_part if ($seg_num % $NUM_THREADS != 0);
+	print "Downloading segments: $seg_num\n";
+	for (my $tid = 0; $tid < $NUM_THREADS; ++$tid) {
+print "Starting thread $tid.\n";
+		my $pid = fork();
+		if (!defined($pid)) {
+			$err = "Failed to fork: $!";
+			last;
+		}
+		elsif ($pid == 0) {
+print "[$tid] Child started.\n";
+			# Child process: downloading the corresponding part of segments list
+			my $start_idx = $seg_num_part * $tid;
+			my $end_idx = $seg_num_part * ($tid + 1);
+			$end_idx = $seg_num if ($end_idx > $seg_num);
+			for (my $i = $start_idx; $i < $end_idx; ++$i) {
+				my $seg_url = $segment_urls[$i];
+				my $seg_file = ($seg_url =~ s|^.*/([^/?]+)\?.*$|$1|r);
+				$res = http_request($seg_url);
+				if (!$res->is_success) {
+					$err = "[$tid] Failed to download segment $seg_file: " . $res->status_line;
+					last;
+				}
+				my $seg_fh;
+				if (!open($seg_fh, '>', "$data_dir/twitch-vod-$vid/$seg_file")) {
+					$err = "[$tid] Failed to open segment file $seg_file:\n$!";
+					last;
+				}
+				binmode($seg_fh);
+				print $seg_fh ${$res->content_ref};
+				close($seg_fh);
+print "[$tid] Segment file No.$i '$seg_file' done.\n";
+			}
+			if ($err) {
+				print STDERR "$err\n";
+				exit(1);
+			}
+			else {
+				print "[$tid] Finished.";
+				exit(0);
+			}
+		}
+		else {
+			# Parent process: continue creating threads
+print "Child with PID $pid started.\n";
+		}
+	}
+	last if ($err);
+	while (($res = wait()) != -1) {
+		print "wait returned $res\n;"
+	}
+	exit;
+
+	my $idx = 0;
+	for my $seg_url (@segment_urls) {
+		++$idx;
+		my $seg_file = ($seg_url =~ s|^.*/([^/?]+)\?.*$|$1|r);
+print "Segment file $idx: $seg_file...";
+		$res = http_request($seg_url);
+		if (!$res->is_success) {
+			$err = 'Failed to download segment $seg_file: ' . $res->status_line;
+			last;
+		}
+		my $seg_fh;
+		if (!open($seg_fh, '>', "$data_dir/twitch-vod-$vid/$seg_file")) {
+			$err = "Failed to open segment file $seg_file:\n$!";
+			last;
+		}
+		binmode($seg_fh);
+		print $seg_fh ${$res->content_ref};
+		close($seg_fh);
+print " Done.\n";
+	}
 
 	# Finally, launch ffmpeg to do the rest of work
 	system('C:/Programs/ffmpeg/bin/ffmpeg.exe -y -i ' . $playlist_file . ' -c copy -bsf:a aac_adtstoasc "' . $file . '"');
