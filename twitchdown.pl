@@ -26,7 +26,7 @@ EOF
 # Reading/parsing input arguments
 my ($vid, $file, @opts) = @ARGV;
 my $vid_type = 'v';
-if ($vid =~ m|http://www.twitch.tv/[^/]+/([^/])/(\d+)|) {
+if ($vid =~ m|http://(?:www\.)?twitch\.tv/[^/]+/([^/])/(\d+)|) {
 	$vid_type = $1;
 	$vid = $2;
 }
