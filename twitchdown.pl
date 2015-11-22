@@ -175,7 +175,7 @@ do {{
 		$err = 'JSON does not contain preview URL.';
 		last;
 	}
-	if ($json->{'muted_segments'}) {
+	if (scalar(@{$json->{'muted_segments'}}) > 0) {
 		push @warnings, "Muted segments are present.";
 	}
 
@@ -287,6 +287,7 @@ do {{
 	my $seg_num_part = int($seg_num / $NUM_THREADS);
 	++$seg_num_part if ($seg_num % $NUM_THREADS != 0);
 	print "Downloading segments: $seg_num\n";
+	my @children = ();
 	for (my $tid = 0; $tid < $NUM_THREADS; ++$tid) {
 print "Starting thread $tid.\n";
 		my $pid = fork();
@@ -323,41 +324,50 @@ print "[$tid] Segment file No.$i '$seg_file' done.\n";
 				exit(1);
 			}
 			else {
-				print "[$tid] Finished.";
+				print "[$tid] Finished.\n";
 				exit(0);
 			}
 		}
 		else {
 			# Parent process: continue creating threads
+			push @children, $pid;
 print "Child with PID $pid started.\n";
 		}
 	}
-	last if ($err);
+	if ($err) {
+		kill 'KILL', @children;
+		last;
+	}
 	while (($res = wait()) != -1) {
-		print "wait returned $res\n;"
+		print "wait returned $res, thread's exit code: " . ($? >> 8) . "\n";
+		if ($?) {
+			$err = "Some of the segments could not be downloaded, aborting.\n";
+			kill 'KILL', @children;
+			last;
+		}
 	}
-	exit;
+	last if ($err);
 
-	my $idx = 0;
-	for my $seg_url (@segment_urls) {
-		++$idx;
-		my $seg_file = ($seg_url =~ s|^.*/([^/?]+)\?.*$|$1|r);
-print "Segment file $idx: $seg_file...";
-		$res = http_request($seg_url);
-		if (!$res->is_success) {
-			$err = 'Failed to download segment $seg_file: ' . $res->status_line;
-			last;
-		}
-		my $seg_fh;
-		if (!open($seg_fh, '>', "$data_dir/twitch-vod-$vid/$seg_file")) {
-			$err = "Failed to open segment file $seg_file:\n$!";
-			last;
-		}
-		binmode($seg_fh);
-		print $seg_fh ${$res->content_ref};
-		close($seg_fh);
-print " Done.\n";
-	}
+#	my $idx = 0;
+#	for my $seg_url (@segment_urls) {
+#		++$idx;
+#		my $seg_file = ($seg_url =~ s|^.*/([^/?]+)\?.*$|$1|r);
+#print "Segment file $idx: $seg_file...";
+#		$res = http_request($seg_url);
+#		if (!$res->is_success) {
+#			$err = 'Failed to download segment $seg_file: ' . $res->status_line;
+#			last;
+#		}
+#		my $seg_fh;
+#		if (!open($seg_fh, '>', "$data_dir/twitch-vod-$vid/$seg_file")) {
+#			$err = "Failed to open segment file $seg_file:\n$!";
+#			last;
+#		}
+#		binmode($seg_fh);
+#		print $seg_fh ${$res->content_ref};
+#		close($seg_fh);
+#print " Done.\n";
+#	}
 
 	# Finally, launch ffmpeg to do the rest of work
 	system('C:/Programs/ffmpeg/bin/ffmpeg.exe -y -i ' . $playlist_file . ' -c copy -bsf:a aac_adtstoasc "' . $file . '"');
