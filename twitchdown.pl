@@ -6,9 +6,9 @@ use warnings;
 use LWP::UserAgent;
 use JSON;
 
-if (scalar(@ARGV) < 2) {
+if (scalar(@ARGV) < 1) {
 	print <<EOF;
-Usage: $0 {URL|VideoID} {FileName} [OPTS]
+Usage: $0 {URL|VideoID} [OPTS]
 
 Options:
   --start=TIME       Download video starting from the specified timestamp.
@@ -24,7 +24,7 @@ EOF
 }
 
 # Reading/parsing input arguments
-my ($vid, $file, @opts) = @ARGV;
+my ($vid, @opts) = @ARGV;
 my $vid_type = 'v';
 if ($vid =~ m|http://(?:www\.)?twitch\.tv/[^/]+/([^/])/(\d+)|) {
 	$vid_type = $1;
@@ -90,13 +90,6 @@ else {
 	$vod_time{'start'} = 0;
 }
 
-# Request overwriting the target file if necessary
-if (-f $file) {
-	print "File [$file] exists. Overwrite? (y/N) ";
-	my $repl = <STDIN>;
-	exit if ($repl !~ m/^y(es)?\s*$/i);
-}
-
 # Prepare downloader
 my $ua = LWP::UserAgent->new();
 $ua->timeout(600);
@@ -153,6 +146,7 @@ sub is_skipped($$) {
 
 my $err = '';
 my $playlist_file = '';
+my $playlist_ts_file = '';
 do {{
 	# Download the VOD JSON
 	my $res = http_request($vid_url);
@@ -198,9 +192,15 @@ do {{
 	# 2) compactification;
 	# 3) using correct URLs for muted parts.
 	my $playlist_fh;
+	my $playlist_ts_fh;
 	$playlist_file = "C:/Users/CaptainFlint/AppData/Local/Temp/index-dvr-$vid.m3u8";
+	$playlist_ts_file = $playlist_file . '.lst';
 	if (!open($playlist_fh, '>', $playlist_file)) {
 		$err = "Failed to open temp file [$playlist_file]:\n$!";
+		last;
+	}
+	if (!open($playlist_ts_fh, '>', $playlist_ts_file)) {
+		$err = "Failed to open temp file [$playlist_ts_file]:\n$!";
 		last;
 	}
 	binmode($playlist_fh);
@@ -218,7 +218,8 @@ do {{
 		if ($current_ts) {
 			# Dump the previously collected segment
 			printf $playlist_fh "#EXTINF:%.3f,\n", $dt_sum;
-			print $playlist_fh "$m3u$current_ts" . (is_crossed($dt_sum_total, $dt_sum, $json->{'muted_segments'}) ? '-muted' : '') . ".ts?start_offset=$current_ts_start&end_offset=$current_ts_end\n";
+			print $playlist_fh "tmp/$current_ts" . (is_crossed($dt_sum_total, $dt_sum, $json->{'muted_segments'}) ? '-muted' : '') . ".ts\n";
+			print $playlist_ts_fh "$m3u$current_ts" . (is_crossed($dt_sum_total, $dt_sum, $json->{'muted_segments'}) ? '-muted' : '') . ".ts?start_offset=$current_ts_start&end_offset=$current_ts_end\n";
 			$current_ts = '';
 		}
 		$dt_sum_total += $dt_sum;
@@ -254,16 +255,13 @@ do {{
 		}
 	}
 	close($playlist_fh);
+	close($playlist_ts_fh);
 	last if ($err);
-
-	# Finally, launch ffmpeg to do the rest of work
-	system('C:/Programs/ffmpeg/bin/ffmpeg.exe -y -i ' . $playlist_file . ' -c copy -bsf:a aac_adtstoasc "' . $file . '"');
 }} while (0);
-
-# Some cleanup
-unlink($playlist_file);
 
 if ($err) {
 	print STDERR "Error: $err\n";
 	exit 2;
 }
+
+print "Files are ready:\nPlaylist:      $playlist_file\nSegments list: $playlist_ts_file\n";
