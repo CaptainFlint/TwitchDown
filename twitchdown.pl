@@ -9,9 +9,12 @@ use JSON;
 # How many threads to use for downloading video segments
 my $NUM_THREADS = 12;
 
+# Number of segment download retries
+my $NUM_RETRIES = 5;
+
 if (scalar(@ARGV) < 2) {
 	print <<EOF;
-Usage: $0 {URL|VideoID} {FileName} [OPTS]
+Usage: $0 {URL|VideoID} {FileName} [OPTIONS]
 
 Options:
   --start=TIME       Download video starting from the specified timestamp.
@@ -21,7 +24,7 @@ Options:
   Supported TIME formats:
   h:mm:ss
   h:mm       (seconds = 0)
-  5h, 5m, 5s (5 hours, minutes or seconds)
+  5h, 5m, 5s (5 hours, 5 minutes, or 5 seconds)
 EOF
 	exit 1;
 }
@@ -272,14 +275,6 @@ do {{
 	close($playlist_fh);
 	last if ($err);
 
-#if (!open($playlist_fh, '>', $playlist_file.".seg")) {
-#	$err = "Failed to open temp file [$playlist_file.seg]:\n$!";
-#	last;
-#}
-#binmode($playlist_fh);
-#print $playlist_fh "$_\n" foreach (@segment_urls);
-#close($playlist_fh);
-
 	print "!!! WARNING: $_\n" foreach (@warnings);
 	print "\n";
 
@@ -301,22 +296,32 @@ print "[$tid] Child started.\n";
 			my $start_idx = $seg_num_part * $tid;
 			my $end_idx = $seg_num_part * ($tid + 1);
 			$end_idx = $seg_num if ($end_idx > $seg_num);
+			my $success = 0;
 			for (my $i = $start_idx; $i < $end_idx; ++$i) {
 				my $seg_url = $segment_urls[$i];
 				my $seg_file = ($seg_url =~ s|^.*/([^/?]+)\?.*$|$1|r);
-				$res = http_request($seg_url);
-				if (!$res->is_success) {
-					$err = "[$tid] Failed to download segment $seg_file: " . $res->status_line;
-					last;
+				for (my $i = 0; $i <= $NUM_RETRIES; ++$i) {
+					$res = http_request($seg_url);
+					if (!$res->is_success) {
+						$err = "[$tid] Failed to download segment $seg_file: " . $res->status_line;
+						last;
+					}
+print "[$tid] Segment URL: $seg_url\nLength: " . $res->header('Content-Length') . "\n";
+					my $seg_fh;
+					my $seg_file = "$data_dir/twitch-vod-$vid/$seg_file";
+					if (!open($seg_fh, '>', $seg_file)) {
+						$err = "[$tid] Failed to open segment file $seg_file:\n$!";
+						last;
+					}
+					binmode($seg_fh);
+					print $seg_fh ${$res->content_ref};
+					close($seg_fh);
+					if (-s $seg_file == $res->header('Content-Length')) {
+						$success = 1;
+						last;
+					}
+print "[$tid] Segment file No.$i '$seg_file' download failed, retrying (" . ($i + 2) . "/$NUM_RETRIES).\n";
 				}
-				my $seg_fh;
-				if (!open($seg_fh, '>', "$data_dir/twitch-vod-$vid/$seg_file")) {
-					$err = "[$tid] Failed to open segment file $seg_file:\n$!";
-					last;
-				}
-				binmode($seg_fh);
-				print $seg_fh ${$res->content_ref};
-				close($seg_fh);
 print "[$tid] Segment file No.$i '$seg_file' done.\n";
 			}
 			if ($err) {
@@ -348,33 +353,13 @@ print "Child with PID $pid started.\n";
 	}
 	last if ($err);
 
-#	my $idx = 0;
-#	for my $seg_url (@segment_urls) {
-#		++$idx;
-#		my $seg_file = ($seg_url =~ s|^.*/([^/?]+)\?.*$|$1|r);
-#print "Segment file $idx: $seg_file...";
-#		$res = http_request($seg_url);
-#		if (!$res->is_success) {
-#			$err = 'Failed to download segment $seg_file: ' . $res->status_line;
-#			last;
-#		}
-#		my $seg_fh;
-#		if (!open($seg_fh, '>', "$data_dir/twitch-vod-$vid/$seg_file")) {
-#			$err = "Failed to open segment file $seg_file:\n$!";
-#			last;
-#		}
-#		binmode($seg_fh);
-#		print $seg_fh ${$res->content_ref};
-#		close($seg_fh);
-#print " Done.\n";
-#	}
-
 	# Finally, launch ffmpeg to do the rest of work
 	system('C:/Programs/ffmpeg/bin/ffmpeg.exe -y -i ' . $playlist_file . ' -c copy -bsf:a aac_adtstoasc "' . $file . '"');
 }} while (0);
 
 # Some cleanup
 unlink($playlist_file);
+# FIXME: Clean up segment files
 
 if ($err) {
 	print STDERR "Error: $err\n";
