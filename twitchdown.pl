@@ -168,6 +168,7 @@ do {{
 	# Construct the playlist URL
 	my $m3u = $json->{'preview'};
 	$m3u =~ s/static-cdn\.jtvnw\.net/vod\.ak\.hls\.ttvnw\.net/;
+	$m3u =~ s/^https:/http:/;
 	if ($json->{'can_highlight'}) {
 		$m3u =~ s/thumb\/thumb.*\.jpg/chunked\/index-dvr.m3u8/;
 	}
