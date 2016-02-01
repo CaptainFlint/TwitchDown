@@ -5,12 +5,21 @@ use warnings;
 
 use LWP::UserAgent;
 use JSON;
+use File::Path 'remove_tree';
+use Term::ANSIColor;
+
+if ($^O eq 'MSWin32') {
+	require Win32::Console::ANSI;
+}
 
 # How many threads to use for downloading video segments
 my $NUM_THREADS = 12;
 
 # Number of segment download retries
 my $NUM_RETRIES = 5;
+
+# Directory for downloading segment files
+my $data_dir = 'C:/Users/CaptainFlint/AppData/Local/Temp';
 
 if (scalar(@ARGV) < 2) {
 	print <<EOF;
@@ -41,7 +50,7 @@ elsif ($vid =~ m/^([a-z])(\d+)$/) {
 	$vid = $2;
 }
 elsif ($vid !~ m/^\d+$/) {
-	print "Invalid video specified!\n";
+	print colored("Invalid video specified!\n", 'bold red');
 	exit 1;
 }
 my $vid_url = 'http://api.twitch.tv/api/videos/' . $vid_type . $vid;
@@ -57,17 +66,17 @@ for (@opts) {
 			$v = $1 * 3600 + $2 * 60 + ($4 ? $4 : 0);
 		}
 		else {
-			print "WARNING: Unrecognized time format '$v', skipping.\n";
+			print colored("WARNING: Unrecognized time format '$v', skipping.\n", 'bold yellow');
 			next;
 		}
 		$vod_time{$k} = $v;
 	}
 	else {
-		print "WARNING: Unknown option '$_', skipping.\n";
+		print colored("WARNING: Unknown option '$_', skipping.\n", 'bold yellow');
 	}
 }
 if (exists($vod_time{'start'}) && exists($vod_time{'end'}) && exists($vod_time{'len'})) {
-	print "ERROR: Start, end and length cannot be specified all at once!\n";
+	print colored("ERROR: Start, end and length cannot be specified all at once!\n", 'bold red');
 	exit 1;
 }
 elsif (exists($vod_time{'start'}) && exists($vod_time{'end'})) {
@@ -185,6 +194,7 @@ do {{
 	# Construct the playlist URL
 	my $m3u = $json->{'preview'};
 	$m3u =~ s/static-cdn\.jtvnw\.net/vod\.ak\.hls\.ttvnw\.net/;
+	$m3u =~ s/^https:/http:/;
 	if ($json->{'can_highlight'}) {
 		$m3u =~ s/thumb\/thumb.*\.jpg/chunked\/index-dvr.m3u8/;
 	}
@@ -210,7 +220,6 @@ do {{
 	# 3) using correct URLs for muted parts.
 	my @segment_urls = ();
 	my $playlist_fh;
-	my $data_dir = 'C:/Users/CaptainFlint/AppData/Local/Temp';
 	$playlist_file = "$data_dir/index-dvr-$vid.m3u8";
 	mkdir("$data_dir/twitch-vod-$vid");
 	if (!open($playlist_fh, '>', $playlist_file)) {
@@ -275,7 +284,7 @@ do {{
 	close($playlist_fh);
 	last if ($err);
 
-	print "!!! WARNING: $_\n" foreach (@warnings);
+	print colored("!!! WARNING: $_\n", 'bold yellow') foreach (@warnings);
 	print "\n";
 
 	my $seg_num = scalar(@segment_urls);
@@ -320,16 +329,16 @@ print "[$tid] Segment URL: $seg_url\nLength: " . $res->header('Content-Length') 
 						$success = 1;
 						last;
 					}
-print "[$tid] Segment file No.$i '$seg_file' download failed, retrying (" . ($i + 2) . "/$NUM_RETRIES).\n";
+print colored("[$tid] Segment file No.$i '$seg_file' download failed, retrying (" . ($i + 2) . "/$NUM_RETRIES).\n", 'bold yellow');
 				}
-print "[$tid] Segment file No.$i '$seg_file' done.\n";
+print colored("[$tid] Segment file No.$i '$seg_file' done.\n", 'bold green');
 			}
 			if ($err) {
-				print STDERR "$err\n";
+				print STDERR colored("$err\n", 'bold red');
 				exit(1);
 			}
 			else {
-				print "[$tid] Finished.\n";
+				print colored("[$tid] Finished.\n", 'bold green');
 				exit(0);
 			}
 		}
@@ -354,14 +363,18 @@ print "Child with PID $pid started.\n";
 	last if ($err);
 
 	# Finally, launch ffmpeg to do the rest of work
-	system('C:/Programs/ffmpeg/bin/ffmpeg.exe -y -i ' . $playlist_file . ' -c copy -bsf:a aac_adtstoasc "' . $file . '"');
+	if (system('C:/Programs/ffmpeg/bin/ffmpeg.exe -y -i ' . $playlist_file . ' -c copy -bsf:a aac_adtstoasc "' . $file . '"') != 0) {
+		print STDERR colored("Error: Failed to build MP4. Segment files are not removed.\n", 'bold red');
+		exit 2;
+	}
 }} while (0);
 
 # Some cleanup
 unlink($playlist_file);
+remove_tree("$data_dir/twitch-vod-$vid");
 # FIXME: Clean up segment files
 
 if ($err) {
-	print STDERR "Error: $err\n";
+	print STDERR colored("Error: $err\n", 'bold red');
 	exit 2;
 }
