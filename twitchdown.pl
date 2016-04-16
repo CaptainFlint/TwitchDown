@@ -41,7 +41,7 @@ EOF
 # Reading/parsing input arguments
 my ($vid, $file, @opts) = @ARGV;
 my $vid_type = 'v';
-if ($vid =~ m|http://(?:www\.)?twitch\.tv/[^/]+/([^/])/(\d+)|) {
+if ($vid =~ m!https?://(?:www\.|secure\.)?twitch\.tv/[^/]+/([^/])/(\d+)!) {
 	$vid_type = $1;
 	$vid = $2;
 }
@@ -188,7 +188,12 @@ do {{
 		last;
 	}
 	if (scalar(@{$json->{'muted_segments'}}) > 0) {
-		push @warnings, "Muted segments are present.";
+		push @warnings, "Muted segments are present:\n" .
+			join("\n",
+				map { format_time($_->{'offset'}) . '-' . format_time($_->{'offset'} + $_->{'duration'}) }
+				sort { $a->{'offset'} <=> $b->{'offset'} }
+				@{$json->{'muted_segments'}}
+			);
 	}
 
 	# Construct the playlist URL
