@@ -53,7 +53,6 @@ elsif ($vid !~ m/^\d+$/) {
 	print colored("Invalid video specified!\n", 'bold red');
 	exit 1;
 }
-my $vid_url = 'http://api.twitch.tv/api/videos/' . $vid_type . $vid;
 
 my %vod_time = ();
 for (@opts) {
@@ -115,6 +114,7 @@ if (-f $file) {
 # Prepare downloader
 my $ua = LWP::UserAgent->new();
 $ua->timeout(600);
+$ua->ssl_opts(verify_hostname => 0);
 
 sub http_request($;$) {
 	my ($url, $method) = @_;
@@ -171,8 +171,9 @@ my $playlist_file = '';
 do {{
 	my @warnings = ();
 
-	# Download the VOD JSON
-	my $res = http_request($vid_url);
+	# Request access token
+	my $token_url = 'https://api.twitch.tv/api/vods/' . $vid . '/access_token?as3=t&oauth_token=';
+	my $res = http_request($token_url);
 	if (!$res->is_success) {
 		$err = 'Failed to download JSON: ' . $res->status_line;
 		last;
@@ -183,28 +184,40 @@ do {{
 		last;
 	}
 	my $json = decode_json($json_txt);
-	if (!$json->{'preview'}) {
+	if (!$json->{'sig'} || !$json->{'token'}) {
 		$err = 'JSON does not contain preview URL.';
 		last;
 	}
-	if (scalar(@{$json->{'muted_segments'}}) > 0) {
-		push @warnings, "Muted segments are present:\n" .
-			join("\n",
-				map { format_time($_->{'offset'}) . '-' . format_time($_->{'offset'} + $_->{'duration'}) }
-				sort { $a->{'offset'} <=> $b->{'offset'} }
-				@{$json->{'muted_segments'}}
-			);
+	my $nauth = ($json->{'token'} =~ s/([^a-z0-9_])/sprintf('%%%02x', ord($1))/egr);
+	
+	# Download meta-playlist
+	my $meta_playlist_url = 'http://usher.twitch.tv/vod/' . $vid . '?nauth=' . $nauth . '&nauthsig=' . $json->{'sig'} . '&allow_source=true&player=twitchweb&allow_spectre=true';
+	$res = http_request($meta_playlist_url);
+	if (!$res->is_success) {
+		$err = 'Failed to download meta-playlist: ' . $res->status_line;
+		last;
 	}
-
-	# Construct the playlist URL
-	my $m3u = $json->{'preview'};
-	$m3u =~ s/static-cdn\.jtvnw\.net/vod\.ak\.hls\.ttvnw\.net/;
-	$m3u =~ s/^https:/http:/;
-	if ($json->{'can_highlight'}) {
-		$m3u =~ s/thumb\/thumb.*\.jpg/chunked\/index-dvr.m3u8/;
+	my $meta_playlist = $res->decoded_content;
+	if (!$meta_playlist) {
+		$err = 'Failed to obtain meta-playlist decoded contents: ' . $res->status_line;
+		last;
 	}
-	else {
-		$m3u =~ s/thumb\/thumb.*\.jpg/chunked\/highlight-$vid.m3u8/;
+	
+	# Fetch the 'source' playlist
+	my $m3u;
+	my $found = 0;
+	for (split(m/\n/, $meta_playlist)) {
+		if (m/NAME="Source"/i) {
+			$found = 1;
+		}
+		elsif (m/^http:/ && $found) {
+			$m3u = $_;
+			last;
+		}
+	}
+	if (!$m3u) {
+		$err = "Failed to find the \"source\" playlist. Meta-playlist contents:\n" . $meta_playlist;
+		last;
 	}
 
 	# Download the playlist
@@ -221,8 +234,7 @@ do {{
 
 	# Save the playlist, modifying it for:
 	# 1) being local;
-	# 2) compactification;
-	# 3) using correct URLs for muted parts.
+	# 2) compactification.
 	my @segment_urls = ();
 	my $playlist_fh;
 	$playlist_file = "$data_dir/index-dvr-$vid.m3u8";
@@ -242,10 +254,15 @@ do {{
 	my $current_ts = '';
 	my $current_ts_start;
 	my $current_ts_end;
+	my @muted = ();
 	my $dump_current_ts = sub() {
 		if ($current_ts) {
+			# Check if the previously collected segment is muted
+			if ($current_ts =~ m/-muted/) {
+				push @muted, format_time($dt_sum_total) . '-' . format_time($dt_sum_total + $dt_sum);
+			}
 			# Dump the previously collected segment
-			my $segment_file = $current_ts . (is_crossed($dt_sum_total, $dt_sum, $json->{'muted_segments'}) ? '-muted' : '') . '.ts';
+			my $segment_file = $current_ts . '.ts';
 			printf $playlist_fh "#EXTINF:%.3f,\n", $dt_sum;
 			print $playlist_fh "twitch-vod-$vid/$segment_file\n";
 			push @segment_urls, "$m3u$segment_file?start_offset=$current_ts_start&end_offset=$current_ts_end";
@@ -287,6 +304,9 @@ do {{
 		}
 	}
 	close($playlist_fh);
+	if (scalar(@muted) > 0) {
+		push @warnings, "Muted segments are present:\n" . join("\n", @muted);
+	}
 	last if ($err);
 
 	print colored("!!! WARNING: $_\n", 'bold yellow') foreach (@warnings);
