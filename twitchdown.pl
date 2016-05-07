@@ -21,6 +21,9 @@ my $NUM_RETRIES = 5;
 # Directory for downloading segment files
 my $data_dir = 'C:/Users/CaptainFlint/AppData/Local/Temp';
 
+# Full path to ffmpeg executable
+my $ffmpeg_exe = 'C:/Programs/ffmpeg/bin/ffmpeg.exe';
+
 if (scalar(@ARGV) < 2) {
 	print <<EOF;
 Usage: $0 {URL|VideoID} {FileName} [OPTIONS]
@@ -388,7 +391,7 @@ print "Child with PID $pid started.\n";
 	last if ($err);
 
 	# Finally, launch ffmpeg to do the rest of work
-	if (system('C:/Programs/ffmpeg/bin/ffmpeg.exe -y -i ' . $playlist_file . ' -c copy -bsf:a aac_adtstoasc "' . $file . '"') != 0) {
+	if (system($ffmpeg_exe . ' -y -i ' . $playlist_file . ' -c copy -bsf:a aac_adtstoasc "' . $file . '"') != 0) {
 		print STDERR colored("Error: Failed to build MP4. Segment files are not removed.\n", 'bold red');
 		exit 2;
 	}
