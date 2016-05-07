@@ -1,0 +1,43 @@
+TwitchDown is a Perl script for downloading twitch.tv VODs (Video-On-Demand),
+similar to TwitchVODDownloader tool:
+http://www.twitchvods.com/download/
+Main difference is that TwitchVODDownloader starts ffmpeg for direct converting
+video from remote URL, while TwitchDown first downloads all segments locally and
+then starts ffmpeg to combine them. This requires disk space twice as video
+would take, but ensures that all segments are downloaded correctly: with remote
+URL some segments may be silently skipped due to connectivity issues during
+download.
+
+Other differences from TwitchVODDownloader:
+* No GUI.
+* No authorization.
+* Instead of end time, the total length can be specified.
+* Warnings about muted segments and video discontinuities.
+
+Usage:
+	perl twitchdown.pl {URL|VideoID} {FileName} [Options]
+
+Arguments:
+	URL              URL to the requested video at twitch.tv.
+	VideoID          ID of the video.
+	FileName         Name of the local file to save the video.
+
+Options:
+	--start=TIME     Download video starting from the specified timestamp.
+	--end=TIME       Download video up to the specified timestamp.
+	--len=TIME       Download video only the specified length of time.
+
+	Supported TIME formats:
+	h:mm:ss
+	h:mm       (seconds = 0)
+	5h, 5m, 5s (5 hours, 5 minutes, or 5 seconds)
+
+Examples:
+	perl twitchdown.pl https://www.twitch.tv/squirrel/v/63949920 e:\Video\Squirrel-SNT.mp4
+	perl twitchdown.pl 63949920 e:\Video\Squirrel-SNT-cut.mp4 --start=1:15:00 --len=2:00:00
+
+Hardcoded options:
+	$NUM_THREADS     Number of threads to use for downloading video segments.
+	$NUM_RETRIES     Number of retries when download fails before giving up.
+	$data_dir        Path for storing temporary data (video segments).
+	$ffmpeg_exe      Path to ffmpeg executable file.
