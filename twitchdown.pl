@@ -257,6 +257,7 @@ do {{
 	my $current_ts = '';
 	my $current_ts_start;
 	my $current_ts_end;
+	my $playlist_finished = 0;
 	my @muted = ();
 	my $dump_current_ts = sub() {
 		if ($current_ts) {
@@ -268,7 +269,12 @@ do {{
 			my $segment_file = $current_ts . '.ts';
 			printf $playlist_fh "#EXTINF:%.3f,\n", $dt_sum;
 			print $playlist_fh "twitch-vod-$vid/$segment_file\n";
-			push @segment_urls, "$m3u$segment_file?start_offset=$current_ts_start&end_offset=$current_ts_end";
+			if (defined($current_ts_start) && defined($current_ts_end)) {
+				push @segment_urls, "$m3u$segment_file?start_offset=$current_ts_start&end_offset=$current_ts_end";
+			}
+			else {
+				push @segment_urls, "$m3u$segment_file";
+			}
 			$current_ts = '';
 		}
 		$dt_sum_total += $dt_sum;
@@ -279,9 +285,10 @@ do {{
 			$dt = $1;
 		}
 		elsif ($ln =~ m/^\x23EXT-X-TWITCH-DISCONTINUITY\s*:\s*([.\d]+)/) {
-			push @warnings, "Stream contains a gap of $1 seconds.";
+			# TODO: Report only if within requested range
+			push @warnings, "Stream contains a gap of $1 seconds at " . format_time($dt_sum_total + $dt_sum) . ".";
 		}
-		elsif ($ln =~ m/^(index-[^.]+)\.ts\?start_offset=(\d+)&end_offset=(\d+)/) {
+		elsif ($ln =~ m/^([^.]+)\.ts(?:\?start_offset=(\d+)&end_offset=(\d+))?$/) {
 			if ($1 ne $current_ts) {
 				# New segment file
 				$dump_current_ts->();
@@ -303,8 +310,15 @@ do {{
 		}
 		else {
 			$dump_current_ts->();
+			if ($ln =~ m/^\x23EXT-X-ENDLIST/) {
+				$playlist_finished = 1;
+			}
 			print $playlist_fh "$ln\n";
 		}
+	}
+	if (!$playlist_finished) {
+		print $playlist_fh "#EXT-X-ENDLIST\n";
+		push @warnings, "Playlist is not finished, force-finishing it\n";
 	}
 	close($playlist_fh);
 	if (scalar(@muted) > 0) {
@@ -336,7 +350,7 @@ print "[$tid] Child started.\n";
 			my $success = 0;
 			for (my $i = $start_idx; $i < $end_idx; ++$i) {
 				my $seg_url = $segment_urls[$i];
-				my $seg_file = ($seg_url =~ s|^.*/([^/?]+)\?.*$|$1|r);
+				my $seg_file = ($seg_url =~ s|^.*/([^/?]+)(\?.*)?$|$1|r);
 				for (my $i = 0; $i <= $NUM_RETRIES; ++$i) {
 					$res = http_request($seg_url);
 					if (!$res->is_success) {
@@ -359,6 +373,7 @@ print "[$tid] Segment URL: $seg_url\nLength: " . $res->header('Content-Length') 
 					}
 print colored("[$tid] Segment file No.$i '$seg_file' download failed, retrying (" . ($i + 2) . "/$NUM_RETRIES).\n", 'bold yellow');
 				}
+				last if ($err);
 print colored("[$tid] Segment file No.$i '$seg_file' done.\n", 'bold green');
 			}
 			if ($err) {
