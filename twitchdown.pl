@@ -18,6 +18,8 @@ my $NUM_THREADS = 12;
 # Number of segment download retries
 my $NUM_RETRIES = 5;
 
+my $TS_MERGE = 0;
+
 # Directory for downloading segment files
 my $data_dir = 'C:/Users/CaptainFlint/AppData/Local/Temp';
 
@@ -268,13 +270,17 @@ do {{
 			# Dump the previously collected segment
 			my $segment_file = $current_ts . '.ts';
 			printf $playlist_fh "#EXTINF:%.3f,\n", $dt_sum;
-			print $playlist_fh "twitch-vod-$vid/$segment_file\n";
+			my $suffix = '';
 			if (defined($current_ts_start) && defined($current_ts_end)) {
 				push @segment_urls, "$m3u$segment_file?start_offset=$current_ts_start&end_offset=$current_ts_end";
+				if (!$TS_MERGE) {
+					$suffix = "-$current_ts_start-$current_ts_end.ts";
+				}
 			}
 			else {
 				push @segment_urls, "$m3u$segment_file";
 			}
+			print $playlist_fh "twitch-vod-$vid/$segment_file$suffix\n";
 			$current_ts = '';
 		}
 		$dt_sum_total += $dt_sum;
@@ -289,7 +295,7 @@ do {{
 			push @warnings, "Stream contains a gap of $1 seconds at " . format_time($dt_sum_total + $dt_sum) . ".";
 		}
 		elsif ($ln =~ m/^([^.]+)\.ts(?:\?start_offset=(\d+)&end_offset=(\d+))?$/) {
-			if ($1 ne $current_ts) {
+			if (!$TS_MERGE || ($1 ne $current_ts)) {
 				# New segment file
 				$dump_current_ts->();
 				if (!is_skipped($dt_sum_total + $dt_sum, $dt)) {
@@ -350,16 +356,25 @@ print "[$tid] Child started.\n";
 			my $success = 0;
 			for (my $i = $start_idx; $i < $end_idx; ++$i) {
 				my $seg_url = $segment_urls[$i];
-				my $seg_file = ($seg_url =~ s|^.*/([^/?]+)(\?.*)?$|$1|r);
-				for (my $i = 0; $i <= $NUM_RETRIES; ++$i) {
+				my $seg_file = ($seg_url =~ s|^.*/([^/?]+)(?:\?start_offset=(\d+)&end_offset=(\d+))?$|$1|r);
+				my ($seg_start, $seg_end) = ($2, $3);
+				for (my $j = 0; $j <= $NUM_RETRIES; ++$j) {
 					$res = http_request($seg_url);
 					if (!$res->is_success) {
-						$err = "[$tid] Failed to download segment $seg_file: " . $res->status_line;
-						last;
+						if ($j == $NUM_RETRIES) {
+							$err = "[$tid] Failed to download segment $seg_file: " . $res->status_line;
+							last;
+						}
+						else {
+print colored("[$tid] Segment file No.$i '$seg_file' download failed, retrying (" . ($j + 2) . "/$NUM_RETRIES).\n", 'bold yellow');
+							next;
+						}
 					}
-print "[$tid] Segment URL: $seg_url\nLength: " . $res->header('Content-Length') . "\n";
+#print "[$tid] Segment URL: $seg_url\nLength: " . $res->header('Content-Length') . "\n";
 					my $seg_fh;
-					my $seg_file = "$data_dir/twitch-vod-$vid/$seg_file";
+					my $suffix = ((!$TS_MERGE && defined($seg_start) && defined($seg_end)) ? "-$seg_start-$seg_end.ts" : '');
+					my $seg_file = "$data_dir/twitch-vod-$vid/$seg_file$suffix";
+#print "[$tid] Saving file $seg_file\n";
 					if (!open($seg_fh, '>', $seg_file)) {
 						$err = "[$tid] Failed to open segment file $seg_file:\n$!";
 						last;
@@ -371,7 +386,7 @@ print "[$tid] Segment URL: $seg_url\nLength: " . $res->header('Content-Length') 
 						$success = 1;
 						last;
 					}
-print colored("[$tid] Segment file No.$i '$seg_file' download failed, retrying (" . ($i + 2) . "/$NUM_RETRIES).\n", 'bold yellow');
+print colored("[$tid] Segment file No.$i '$seg_file' download failed, retrying (" . ($j + 2) . "/$NUM_RETRIES).\n", 'bold yellow');
 				}
 				last if ($err);
 print colored("[$tid] Segment file No.$i '$seg_file' done.\n", 'bold green');
