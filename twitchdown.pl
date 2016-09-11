@@ -37,8 +37,8 @@ Options:
 
   Supported TIME formats:
   h:mm:ss
-  h:mm       (seconds = 0)
-  5h, 5m, 5s (5 hours, 5 minutes, or 5 seconds)
+  h:mm         (seconds = 0)
+  5h, 5m, 5[s] (5 hours, 5 minutes, or 5 seconds)
 EOF
 	exit 1;
 }
@@ -63,8 +63,8 @@ my %vod_time = ();
 for (@opts) {
 	if (m/^--(start|end|len)=(.*)/) {
 		my ($k, $v) = ($1, $2);
-		if ($v =~ m/^(\d+)(h|m|s)$/i) {
-			$v = $1 * ( {'h' => 3600, 'm' => 60, 's' => 1}->{$2} );
+		if ($v =~ m/^(\d+)(h|m|s|)$/i) {
+			$v = $1 * ( {'h' => 3600, 'm' => 60, 's' => 1, '' => 1}->{$2} );
 		}
 		elsif ($v =~ m/^(\d+):(\d+)(:(\d+))?/) {
 			$v = $1 * 3600 + $2 * 60 + ($4 ? $4 : 0);
