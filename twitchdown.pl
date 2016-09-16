@@ -10,6 +10,7 @@ use Term::ANSIColor;
 
 if ($^O eq 'MSWin32') {
 	require Win32::Console::ANSI;
+	require Win32::Mutex;
 }
 
 # How many threads to use for downloading video segments
@@ -169,6 +170,24 @@ sub is_skipped($$) {
 	else {
 		return ($start + $len < $vod_time{'start'});
 	}
+}
+
+# Puts colored character at the specified position (0-based) of the progress bar.
+# Cursor originally is located at the end, and returned there after printing.
+my $put_char_mutex = Win32::Mutex->new();
+sub put_char($$$$) {
+	my ($char, $pos, $len, $color) = @_;
+	$put_char_mutex->wait();
+	my ($w, $h) = Win32::Console::ANSI::XYMax();
+	my ($x, $y) = Win32::Console::ANSI::Cursor();
+	# Position of the beginning of the progress bar (assume it always starts from newline)
+	my ($xstart, $ystart) = (1, $y - int($len / $w));
+	# Position of the character to insert
+	my ($xpos, $ypos) = ($xstart + ($pos % $w), $ystart + int($pos / $w));
+	Win32::Console::ANSI::Cursor($xpos, $ypos);
+	print colored($char, $color);
+	Win32::Console::ANSI::Cursor($x, $y);
+	$put_char_mutex->release();
 }
 
 my $err = '';
@@ -338,17 +357,16 @@ do {{
 	my $seg_num = scalar(@segment_urls);
 	my $seg_num_part = int($seg_num / $NUM_THREADS);
 	++$seg_num_part if ($seg_num % $NUM_THREADS != 0);
-	print "Downloading segments: $seg_num\n";
+	print "Downloading segments: $seg_num\n" . ('.' x $seg_num);
 	my @children = ();
 	for (my $tid = 0; $tid < $NUM_THREADS; ++$tid) {
-print "Starting thread $tid.\n";
 		my $pid = fork();
 		if (!defined($pid)) {
 			$err = "Failed to fork: $!";
 			last;
 		}
 		elsif ($pid == 0) {
-print "[$tid] Child started.\n";
+#print "[$tid] Child started.\n";
 			# Child process: downloading the corresponding part of segments list
 			my $start_idx = $seg_num_part * $tid;
 			my $end_idx = $seg_num_part * ($tid + 1);
@@ -359,6 +377,7 @@ print "[$tid] Child started.\n";
 				my $seg_file = ($seg_url =~ s|^.*/([^/?]+)(?:\?start_offset=(\d+)&end_offset=(\d+))?$|$1|r);
 				my ($seg_start, $seg_end) = ($2, $3);
 				for (my $j = 0; $j <= $NUM_RETRIES; ++$j) {
+					put_char(($j ? ($j + 1) : '?'), $i, $seg_num, 'bold yellow');
 					$res = http_request($seg_url);
 					if (!$res->is_success) {
 						if ($j == $NUM_RETRIES) {
@@ -366,7 +385,7 @@ print "[$tid] Child started.\n";
 							last;
 						}
 						else {
-print colored("[$tid] Segment file No.$i '$seg_file' download failed, retrying (" . ($j + 2) . "/$NUM_RETRIES).\n", 'bold yellow');
+#print colored("[$tid] Segment file No.$i '$seg_file' download failed, retrying (" . ($j + 2) . "/$NUM_RETRIES).\n", 'bold yellow');
 							next;
 						}
 					}
@@ -386,24 +405,28 @@ print colored("[$tid] Segment file No.$i '$seg_file' download failed, retrying (
 						$success = 1;
 						last;
 					}
-print colored("[$tid] Segment file No.$i '$seg_file' download failed, retrying (" . ($j + 2) . "/$NUM_RETRIES).\n", 'bold yellow');
+#print colored("[$tid] Segment file No.$i '$seg_file' download failed, retrying (" . ($j + 2) . "/$NUM_RETRIES).\n", 'bold yellow');
 				}
-				last if ($err);
-print colored("[$tid] Segment file No.$i '$seg_file' done.\n", 'bold green');
+				if ($err) {
+					put_char('X', $i, $seg_num, 'bold red');
+					last;
+				}
+				put_char('#', $i, $seg_num, 'bold green');
+#print colored("[$tid] Segment file No.$i '$seg_file' done.\n", 'bold green');
 			}
 			if ($err) {
-				print STDERR colored("$err\n", 'bold red');
+#				print STDERR colored("$err\n", 'bold red');
 				exit(1);
 			}
 			else {
-				print colored("[$tid] Finished.\n", 'bold green');
+#				print colored("[$tid] Finished.\n", 'bold green');
 				exit(0);
 			}
 		}
 		else {
 			# Parent process: continue creating threads
 			push @children, $pid;
-print "Child with PID $pid started.\n";
+#print "Child with PID $pid started.\n";
 		}
 	}
 	if ($err) {
@@ -411,13 +434,14 @@ print "Child with PID $pid started.\n";
 		last;
 	}
 	while (($res = wait()) != -1) {
-		print "wait returned $res, thread's exit code: " . ($? >> 8) . "\n";
+#		print "wait returned $res, thread's exit code: " . ($? >> 8) . "\n";
 		if ($?) {
 			$err = "Some of the segments could not be downloaded, aborting.\n";
 			kill 'KILL', @children;
 			last;
 		}
 	}
+	print "\n";
 	last if ($err);
 
 	# Finally, launch ffmpeg to do the rest of work
