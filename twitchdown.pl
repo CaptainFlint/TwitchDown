@@ -26,6 +26,9 @@ my $options = {
 	'num_retries' => 5,
 	# Whether to try mergning segments by file names (seems to not work lately)
 	'ts_merge' => 0,
+	# Stream type to fetch
+	#'stream_id' => 'VIDEO="720p30"',  # Specific type
+	'stream_id' => 'VIDEO="chunked"',  # Source
 };
 
 my $ini_file = $FindBin::Bin . '/twitchdown.ini';
@@ -50,6 +53,7 @@ Options:
   --start=TIME       Download video starting from the specified timestamp.
   --end=TIME         Download video up to the specified timestamp.
   --len=TIME         Download video only the specified length of time.
+  --quality=SPEC     Specify stream quality specification to download.
 
   Supported TIME formats:
   h:mm:ss
@@ -62,9 +66,12 @@ EOF
 # Reading/parsing input arguments
 my ($vid, $file, @opts) = @ARGV;
 my $vid_type = 'v';
-if ($vid =~ m!https?://(?:www\.|secure\.)?twitch\.tv/[^/]+/([^/])/(\d+)!) {
+if ($vid =~ m!https?://(?:www\.|secure\.|go\.)?twitch\.tv/[^/]+/([^/])/(\d+)!) {
 	$vid_type = $1;
 	$vid = $2;
+}
+elsif ($vid =~ m!https?://(?:www\.|secure\.|go\.)?twitch\.tv/[^/]+/(\d+)!) {
+	$vid = $1;
 }
 elsif ($vid =~ m/^([a-z])(\d+)$/) {
 	$vid_type = $1;
@@ -93,6 +100,9 @@ for (@opts) {
 	}
 	elsif (m/^--token=(\S+)/) {
 		$options->{'twitch_auth'} = $1;
+	}
+	elsif (m/^--quality=(\S+)/) {
+		$options->{'stream_id'} = 'VIDEO="' . $1 . '"';
 	}
 	else {
 		print colored("WARNING: Unknown option '$_', skipping.\n", 'bold yellow');
@@ -259,19 +269,27 @@ my $playlist_file = '';
 do {{
 	my @warnings = ();
 
+	# Validate access token
+	my $json_txt = `"C:/Program Files/Git/mingw64/bin/curl.exe" -H "Accept: application/vnd.twitchtv.v5+json" -H "Authorization: OAuth $options->{'twitch_auth'}" -X GET https://api.twitch.tv/kraken 2>nul`;
+	my $json = decode_json($json_txt);
+	if (!$json->{'token'}->{'valid'}) {
+		$err = "Access token is invalid!";
+		last;
+	}
+
 	# Request access token
 	my $token_url = 'https://api.twitch.tv/api/vods/' . $vid . '/access_token?as3=t&oauth_token=' . $options->{'twitch_auth'};
 	my $res = http_request($token_url);
 	if (!$res->is_success) {
-		$err = 'Failed to download JSON: ' . $res->status_line;
+		$err = "Failed to download JSON by $token_url\n" . $res->status_line;
 		last;
 	}
-	my $json_txt = $res->decoded_content;
+	$json_txt = $res->decoded_content;
 	if (!$json_txt) {
 		$err = 'Failed to obtain JSON decoded contents: ' . $res->status_line;
 		last;
 	}
-	my $json = decode_json($json_txt);
+	$json = decode_json($json_txt);
 	if (!$json->{'sig'} || !$json->{'token'}) {
 		$err = 'JSON does not contain preview URL.';
 		last;
@@ -290,12 +308,12 @@ do {{
 		$err = 'Failed to obtain meta-playlist decoded contents: ' . $res->status_line;
 		last;
 	}
-	
+
 	# Fetch the 'source' playlist
 	my $m3u;
 	my $found = 0;
 	for (split(m/\n/, $meta_playlist)) {
-		if (m/NAME="Source"/i) {
+		if (m/$options->{'stream_id'}/i) {
 			$found = 1;
 		}
 		elsif (m/^http:/ && $found) {
@@ -304,7 +322,7 @@ do {{
 		}
 	}
 	if (!$m3u) {
-		$err = "Failed to find the \"source\" playlist. Meta-playlist contents:\n" . $meta_playlist;
+		$err = "Failed to find the playlist for $options->{'stream_id'}. Meta-playlist contents:\n" . $meta_playlist;
 		last;
 	}
 
