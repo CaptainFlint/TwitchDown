@@ -1,0 +1,6 @@
+data_dir = C:/Users/CaptainFlint/AppData/Local/Temp
+ffmpeg_exe = C:/Programs/ffmpeg/bin/ffmpeg.exe
+twitch_auth = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+num_threads = 8
+num_retries = 32
+ts_merge = 0
