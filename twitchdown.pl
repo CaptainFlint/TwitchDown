@@ -374,7 +374,7 @@ do {{
 				}
 			}
 			# Dump the previously collected segment
-			my $segment_file = $current_ts . '.ts';
+			my $segment_file = $current_ts;
 			printf $playlist_fh "#EXTINF:%.3f,\n", $dt_sum;
 			my $suffix = '';
 			if (defined($current_ts_start) && defined($current_ts_end)) {
@@ -400,7 +400,7 @@ do {{
 			# TODO: Report only if within requested range
 			push @warnings, "Stream contains a gap of $1 seconds at " . format_time($dt_sum_total + $dt_sum) . ".";
 		}
-		elsif ($ln =~ m/^([^.]+)\.ts(?:\?start_offset=(\d+)&end_offset=(\d+))?$/) {
+		elsif ($ln =~ m/^([^.]+\.ts)(?:\?start_offset=(\d+)&end_offset=(\d+))?$/) {
 			if (!$options->{'ts_merge'} || ($1 ne $current_ts)) {
 				# New segment file
 				$dump_current_ts->();
