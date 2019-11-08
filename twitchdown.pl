@@ -54,6 +54,7 @@ Options:
   --end=TIME         Download video up to the specified timestamp.
   --len=TIME         Download video only the specified length of time.
   --quality=SPEC     Specify stream quality specification to download.
+  --numthreads=N     Number of parallel download threads.
 
   Supported TIME formats:
   h:mm:ss
@@ -103,6 +104,9 @@ for (@opts) {
 	}
 	elsif (m/^--quality=(\S+)/) {
 		$options->{'stream_id'} = 'VIDEO="' . $1 . '"';
+	}
+	elsif (m/^--numthreads=(\S+)/) {
+		$options->{'num_threads'} = $1;
 	}
 	else {
 		print colored("WARNING: Unknown option '$_', skipping.\n", 'bold yellow');
