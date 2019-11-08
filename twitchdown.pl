@@ -67,11 +67,11 @@ EOF
 # Reading/parsing input arguments
 my ($vid, $file, @opts) = @ARGV;
 my $vid_type = 'v';
-if ($vid =~ m!https?://(?:www\.|secure\.|go\.)?twitch\.tv/[^/]+/([^/])/(\d+)!) {
+if ($vid =~ m!https?://(?:www\.|secure\.|go\.)?twitch\.tv/[^/]+/([^/])/(\d+)(\?.*)?!) {
 	$vid_type = $1;
 	$vid = $2;
 }
-elsif ($vid =~ m!https?://(?:www\.|secure\.|go\.)?twitch\.tv/[^/]+/(\d+)!) {
+elsif ($vid =~ m!https?://(?:www\.|secure\.|go\.)?twitch\.tv/[^/]+/(\d+)(\?.*)?!) {
 	$vid = $1;
 }
 elsif ($vid =~ m/^([a-z])(\d+)$/) {
